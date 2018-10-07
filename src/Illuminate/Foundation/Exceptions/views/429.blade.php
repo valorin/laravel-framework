@@ -8,4 +8,4 @@
 </div>
 @endsection
 
-@section('message', __('Sorry, you are making too many requests to our servers.'))
+@section('message', __($exception->getMessage() ?: 'Sorry, you are making too many requests to our servers.'))
