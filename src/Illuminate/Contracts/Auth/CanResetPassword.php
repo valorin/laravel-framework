@@ -14,8 +14,8 @@ interface CanResetPassword
     /**
      * Send the password reset notification.
      *
-     * @param  string  $token
+     * @param  string  $url
      * @return void
      */
-    public function sendPasswordResetNotification($token);
+    public function sendPasswordResetNotification($url);
 }

@@ -2,7 +2,9 @@
 
 namespace Illuminate\Auth\Passwords;
 
+use Illuminate\Cache\RateLimiter;
 use Illuminate\Contracts\Auth\PasswordBrokerFactory as FactoryContract;
+use Illuminate\Contracts\Routing\UrlGenerator;
 use InvalidArgumentException;
 
 /**
@@ -64,38 +66,13 @@ class PasswordBrokerManager implements FactoryContract
             throw new InvalidArgumentException("Password resetter [{$name}] is not defined.");
         }
 
-        // The password broker uses a token repository to validate tokens and send user
-        // password e-mails, as well as validating that password reset process as an
-        // aggregate service of sorts providing a convenient interface for resets.
+        // The password broker generates and verifies signed URLs + sends user
+        // password e-mails, to facilitate the password reset process as an
+        // aggregate service providing a convenient interface for resets.
         return new PasswordBroker(
-            $this->createTokenRepository($config),
-            $this->app['auth']->createUserProvider($config['provider'] ?? null)
-        );
-    }
-
-    /**
-     * Create a token repository instance based on the given configuration.
-     *
-     * @param  array  $config
-     * @return \Illuminate\Auth\Passwords\TokenRepositoryInterface
-     */
-    protected function createTokenRepository(array $config)
-    {
-        $key = $this->app['config']['app.key'];
-
-        if (str_starts_with($key, 'base64:')) {
-            $key = base64_decode(substr($key, 7));
-        }
-
-        $connection = $config['connection'] ?? null;
-
-        return new DatabaseTokenRepository(
-            $this->app['db']->connection($connection),
-            $this->app['hash'],
-            $config['table'],
-            $key,
-            $config['expire'],
-            $config['throttle'] ?? 0
+            $this->app['auth']->createUserProvider($config['provider'] ?? null),
+            $this->app[RateLimiter::class],
+            $this->app[UrlGenerator::class]
         );
     }
 

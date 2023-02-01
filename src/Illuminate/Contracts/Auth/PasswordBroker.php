@@ -3,6 +3,7 @@
 namespace Illuminate\Contracts\Auth;
 
 use Closure;
+use Illuminate\Http\Request;
 
 interface PasswordBroker
 {
@@ -28,11 +29,11 @@ interface PasswordBroker
     const INVALID_USER = 'passwords.user';
 
     /**
-     * Constant representing an invalid token.
+     * Constant representing an invalid signature.
      *
      * @var string
      */
-    const INVALID_TOKEN = 'passwords.token';
+    const INVALID_SIGNATURE = 'passwords.signature';
 
     /**
      * Constant representing a throttled reset attempt.
@@ -51,11 +52,12 @@ interface PasswordBroker
     public function sendResetLink(array $credentials, Closure $callback = null);
 
     /**
-     * Reset the password for the given token.
+     * Reset the password for the given request.
      *
+     * @param  \Illuminate\Http\Request $request
      * @param  array  $credentials
      * @param  \Closure  $callback
      * @return mixed
      */
-    public function reset(array $credentials, Closure $callback);
+    public function reset(Request $request, array $credentials, Closure $callback);
 }

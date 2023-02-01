@@ -2,40 +2,80 @@
 
 namespace Illuminate\Auth\Passwords;
 
+use Carbon\Carbon;
 use Closure;
+use Illuminate\Cache\RateLimiter;
 use Illuminate\Contracts\Auth\CanResetPassword as CanResetPasswordContract;
 use Illuminate\Contracts\Auth\PasswordBroker as PasswordBrokerContract;
 use Illuminate\Contracts\Auth\UserProvider;
+use Illuminate\Contracts\Routing\UrlGenerator;
+use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
 use UnexpectedValueException;
 
 class PasswordBroker implements PasswordBrokerContract
 {
     /**
-     * The password token repository.
+     * The number of seconds the reset link should be active for.
      *
-     * @var \Illuminate\Auth\Passwords\TokenRepositoryInterface
+     * @var int
      */
-    protected $tokens;
+    protected $expires = 3600;
+
+    /**
+     * Minimum number of seconds before re-sending a new reset link.
+     *
+     * @var int
+     */
+    protected $throttle = 60;
+
+    /**
+     * The callback that should be used to create the reset password URL.
+     *
+     * @var (\Closure(mixed, string): string)|null
+     */
+    protected $createUrlCallback;
+
+    /**
+     * The callback that should be used to validate the reset request.
+     *
+     * @var (\Closure(mixed, string): string)|null
+     */
+    protected $validateRequestCallback;
 
     /**
      * The user provider implementation.
      *
      * @var \Illuminate\Contracts\Auth\UserProvider
      */
-    protected $users;
+    protected UserProvider $users;
+
+    /**
+     * The rate limiter.
+     *
+     * @var \Illuminate\Cache\RateLimiter
+     */
+    protected RateLimiter $limiter;
+
+    /**
+     * The URL generator instance.
+     *
+     * @var \Illuminate\Routing\UrlGenerator
+     */
+    protected UrlGenerator $generator;
 
     /**
      * Create a new password broker instance.
      *
-     * @param  \Illuminate\Auth\Passwords\TokenRepositoryInterface  $tokens
-     * @param  \Illuminate\Contracts\Auth\UserProvider  $users
-     * @return void
+     * @param UserProvider $users
+     * @param RateLimiter $limiter
+     * @param UrlGenerator $generator
      */
-    public function __construct(TokenRepositoryInterface $tokens, UserProvider $users)
+    public function __construct(UserProvider $users, RateLimiter $limiter, UrlGenerator $generator)
     {
         $this->users = $users;
-        $this->tokens = $tokens;
+        $this->limiter = $limiter;
+        $this->generator = $generator;
     }
 
     /**
@@ -56,34 +96,37 @@ class PasswordBroker implements PasswordBrokerContract
             return static::INVALID_USER;
         }
 
-        if ($this->tokens->recentlyCreatedToken($user)) {
+        if ($this->limiter->tooManyAttempts($this->throttleKey($user), 1)) {
             return static::RESET_THROTTLED;
         }
 
-        $token = $this->tokens->create($user);
+        $this->limiter->hit($this->throttleKey($user), $this->throttle);
+
+        $url = $this->resetUrl($user);
 
         if ($callback) {
-            $callback($user, $token);
+            $callback($user, $url);
         } else {
-            // Once we have the reset token, we are ready to send the message out to this
-            // user with a link to reset their password. We will then redirect back to
-            // the current URI having nothing set in the session to indicate errors.
-            $user->sendPasswordResetNotification($token);
+            // Once we have the reset URL, we are ready to send it to the
+            // user to reset their password. We can then redirect back
+            // to the current URI with no errors set in the session.
+            $user->sendPasswordResetNotification($url);
         }
 
         return static::RESET_LINK_SENT;
     }
 
     /**
-     * Reset the password for the given token.
+     * Reset the password for the given request.
      *
+     * @param  \Illuminate\Http\Request $request
      * @param  array  $credentials
      * @param  \Closure  $callback
      * @return mixed
      */
-    public function reset(array $credentials, Closure $callback)
+    public function reset(Request $request, array $credentials, Closure $callback)
     {
-        $user = $this->validateReset($credentials);
+        $user = $this->validateReset($request, $credentials);
 
         // If the responses from the validate method is not a user instance, we will
         // assume that it is a redirect and simply return it from this method and
@@ -99,25 +142,28 @@ class PasswordBroker implements PasswordBrokerContract
         // in their persistent storage. Then we'll delete the token and return.
         $callback($user, $password);
 
-        $this->tokens->delete($user);
-
         return static::PASSWORD_RESET;
     }
 
     /**
      * Validate a password reset for the given credentials.
      *
+     * @param  \Illuminate\Http\Request $request
      * @param  array  $credentials
-     * @return \Illuminate\Contracts\Auth\CanResetPassword|string
+     * @return CanResetPasswordContract|string
      */
-    protected function validateReset(array $credentials)
+    protected function validateReset(Request $request, array $credentials)
     {
         if (is_null($user = $this->getUser($credentials))) {
             return static::INVALID_USER;
         }
 
-        if (! $this->tokens->exists($user, $credentials['token'])) {
-            return static::INVALID_TOKEN;
+        if ($this->validateRequestCallback) {
+            return call_user_func($this->validateRequestCallback, $request, $credentials) ?: $user;
+        }
+
+        if (! $this->generator->hasValidSignature($request)) {
+            return static::INVALID_SIGNATURE;
         }
 
         return $user;
@@ -127,7 +173,7 @@ class PasswordBroker implements PasswordBrokerContract
      * Get the user for the given credentials.
      *
      * @param  array  $credentials
-     * @return \Illuminate\Contracts\Auth\CanResetPassword|null
+     * @return CanResetPasswordContract|null
      *
      * @throws \UnexpectedValueException
      */
@@ -145,46 +191,67 @@ class PasswordBroker implements PasswordBrokerContract
     }
 
     /**
-     * Create a new password reset token for the given user.
+     * Get the reset URL for the given user.
      *
-     * @param  \Illuminate\Contracts\Auth\CanResetPassword  $user
+     * @param  \Illuminate\Contracts\Auth\CanResetPassword $user
      * @return string
      */
-    public function createToken(CanResetPasswordContract $user)
+    protected function resetUrl(CanResetPasswordContract $user): string
     {
-        return $this->tokens->create($user);
+        if ($this->createUrlCallback) {
+            return call_user_func($this->createUrlCallback, $user);
+        }
+
+        return $this->generator->temporarySignedRoute(
+            'password.reset',
+            Carbon::now()->addSeconds($this->expires),
+            ['email' => $user->getEmailForPasswordReset()]
+        );
     }
 
     /**
-     * Delete password reset tokens of the given user.
+     * Set a callback that should be used when creating the reset password button URL.
      *
-     * @param  \Illuminate\Contracts\Auth\CanResetPassword  $user
+     * @param  \Closure(mixed, string): string  $callback
      * @return void
      */
-    public function deleteToken(CanResetPasswordContract $user)
+    public function createUrlUsing($callback)
     {
-        $this->tokens->delete($user);
+        $this->createUrlCallback = $callback;
     }
 
     /**
-     * Validate the given password reset token.
+     * Set a callback that should be used when validating the reset request.
      *
-     * @param  \Illuminate\Contracts\Auth\CanResetPassword  $user
-     * @param  string  $token
-     * @return bool
+     * @param  \Closure(mixed, string): string  $callback
+     * @return void
      */
-    public function tokenExists(CanResetPasswordContract $user, $token)
+    public function validateRequestUsing($callback)
     {
-        return $this->tokens->exists($user, $token);
+        $this->validateRequestCallback = $callback;
     }
 
     /**
-     * Get the password reset token repository implementation.
-     *
-     * @return \Illuminate\Auth\Passwords\TokenRepositoryInterface
+     * The number of minutes the reset link should be active for.
      */
-    public function getRepository()
+    public function setResetLinkExpiry(int $expires)
     {
-        return $this->tokens;
+        $this->expires = $expires * 60;
+    }
+
+    /**
+     * Minimum number of seconds before re-sending a new reset link.
+     */
+    public function setResetLinkThrottle(int $throttle)
+    {
+        $this->throttle = $throttle;
+    }
+
+    /**
+     * Get the rate limiting throttle key for the request.
+     */
+    protected function throttleKey(CanResetPasswordContract $user): string
+    {
+        return "reset-password:{$user->getEmailForPasswordReset()}";
     }
 }
