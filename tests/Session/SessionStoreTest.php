@@ -43,24 +43,30 @@ class SessionStoreTest extends TestCase
     {
         $session = $this->getSession();
         $oldId = $session->getId();
+        $oldToken = $session->token();
         $session->getHandler()->shouldReceive('destroy')->never();
         $this->assertTrue($session->migrate());
         $this->assertNotEquals($oldId, $session->getId());
+        $this->assertNotEquals($oldToken, $session->token());
 
         $session = $this->getSession();
         $oldId = $session->getId();
+        $oldToken = $session->token();
         $session->getHandler()->shouldReceive('destroy')->once()->with($oldId);
         $this->assertTrue($session->migrate(true));
         $this->assertNotEquals($oldId, $session->getId());
+        $this->assertNotEquals($oldToken, $session->token());
     }
 
     public function testSessionRegeneration()
     {
         $session = $this->getSession();
         $oldId = $session->getId();
+        $oldToken = $session->token();
         $session->getHandler()->shouldReceive('destroy')->never();
         $this->assertTrue($session->regenerate());
         $this->assertNotEquals($oldId, $session->getId());
+        $this->assertNotEquals($oldToken, $session->token());
     }
 
     public function testCantSetInvalidId()
@@ -83,6 +89,7 @@ class SessionStoreTest extends TestCase
     {
         $session = $this->getSession();
         $oldId = $session->getId();
+        $oldToken = $session->token();
 
         $session->put('foo', 'bar');
         $this->assertGreaterThan(0, count($session->all()));
@@ -95,7 +102,8 @@ class SessionStoreTest extends TestCase
 
         $this->assertFalse($session->has('name'));
         $this->assertNotEquals($oldId, $session->getId());
-        $this->assertCount(0, $session->all());
+        $this->assertNotEquals($oldToken, $session->token());
+        $this->assertCount(1, $session->all());
     }
 
     public function testBrandNewSessionIsProperlySaved()
@@ -190,9 +198,9 @@ class SessionStoreTest extends TestCase
     {
         $session = $this->getSession();
         $oldId = $session->getId();
-        $token = Str::random(40);
+        $oldToken = Str::random(40);
         $session->getHandler()->shouldReceive('read')->once()->with($oldId)->andReturn(serialize([
-            '_token' => $token,
+            '_token' => $oldToken,
             'foo' => 'bar',
             'baz' => 'boom',
             '_flash' => [
@@ -205,13 +213,15 @@ class SessionStoreTest extends TestCase
         $oldId = $session->getId();
         $session->migrate();
         $newId = $session->getId();
+        $newToken = $session->token();
 
         $this->assertNotEquals($newId, $oldId);
+        $this->assertNotEquals($newToken, $oldToken);
 
         $session->getHandler()->shouldReceive('write')->once()->with(
             $newId,
             serialize([
-                '_token' => $token,
+                '_token' => $newToken,
                 'foo' => 'bar',
                 'baz' => 'boom',
                 '_flash' => [

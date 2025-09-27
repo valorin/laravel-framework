@@ -602,9 +602,7 @@ class Store implements Session
      */
     public function regenerate($destroy = false)
     {
-        return tap($this->migrate($destroy), function () {
-            $this->regenerateToken();
-        });
+        $this->migrate($destroy);
     }
 
     /**
@@ -622,6 +620,8 @@ class Store implements Session
         $this->setExists(false);
 
         $this->setId($this->generateSessionId());
+
+        $this->regenerateToken();
 
         return true;
     }
